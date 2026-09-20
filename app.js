@@ -52,6 +52,10 @@ const defaultState = {
 let state = loadState();
 if (!state.selectedId) state.selectedId = state.games[0]?.id || "";
 
+// 复核输入草稿（按游戏记住，避免重渲染丢失）和提示语，不持久化
+const reviewDrafts = {};
+let reviewNotice = "";
+
 const els = {
   searchInput: document.querySelector("#searchInput"),
   playerFilter: document.querySelector("#playerFilter"),
@@ -70,16 +74,25 @@ const els = {
   gameCount: document.querySelector("#gameCount"),
   ruleCount: document.querySelector("#ruleCount"),
   staleGame: document.querySelector("#staleGame"),
+  disputeCount: document.querySelector("#disputeCount"),
   visibleCount: document.querySelector("#visibleCount")
 };
 
+function normalizeState(data) {
+  data.games.forEach((game) => {
+    if (!Array.isArray(game.disputeArchive)) game.disputeArchive = [];
+  });
+  if (!data.review) data.review = null;
+  return data;
+}
+
 function loadState() {
   const saved = localStorage.getItem(storageKey);
-  if (!saved) return structuredClone(defaultState);
+  if (!saved) return normalizeState(structuredClone(defaultState));
   try {
-    return { ...structuredClone(defaultState), ...JSON.parse(saved) };
+    return normalizeState({ ...structuredClone(defaultState), ...JSON.parse(saved) });
   } catch {
-    return structuredClone(defaultState);
+    return normalizeState(structuredClone(defaultState));
   }
 }
 
@@ -118,10 +131,12 @@ function getFilteredGames() {
 
 function renderSummary() {
   const allRuleCount = state.games.reduce((sum, game) => sum + getAllRules(game).length, 0);
+  const disputeCount = state.games.reduce((sum, game) => sum + game.disputes.length, 0);
   const stale = [...state.games].sort((a, b) => daysSince(b.lastPlayed) - daysSince(a.lastPlayed))[0];
   els.gameCount.textContent = state.games.length;
   els.ruleCount.textContent = allRuleCount;
   els.staleGame.textContent = stale ? `${daysSince(stale.lastPlayed)}天` : "-";
+  els.disputeCount.textContent = disputeCount;
 }
 
 function renderList() {
@@ -147,6 +162,7 @@ function renderList() {
                 <span class="pill">${game.minPlayers}-${game.maxPlayers}人</span>
                 <span class="pill">${game.duration}分钟</span>
                 <span class="pill heavy">${escapeHtml(game.complexity)}</span>
+                ${game.disputes.length ? `<span class="pill warn">${game.disputes.length}个争议待处理</span>` : ""}
               </div>
             </div>
           </article>
@@ -180,6 +196,8 @@ function renderDetail() {
       ${renderRuleSection("常见争议", "disputes", game.disputes)}
       ${renderRuleSection("开局准备", "setup", game.setup)}
       ${renderRuleSection("计分提醒", "scoring", game.scoring)}
+      ${renderArchiveSection(game)}
+      ${renderReviewSection(game)}
       <form class="add-rule" id="ruleForm">
         <select id="ruleTypeInput">
           <option value="forgets">容易忘的规则</option>
@@ -191,7 +209,6 @@ function renderDetail() {
         <button class="primary" type="submit">加入规则卡片</button>
       </form>
       <div class="detail-actions">
-        <button id="playedTodayBtn" type="button">标记今天玩过</button>
         <button id="deleteGameBtn" type="button">删除桌游</button>
       </div>
     </div>
@@ -218,6 +235,126 @@ function renderRuleSection(title, key, items) {
       </ul>
     </section>
   `;
+}
+
+function renderArchiveSection(game) {
+  if (!game.disputeArchive.length) return "";
+  return `
+    <section class="rule-section archive-section">
+      <h3>争议归档</h3>
+      <ul class="rule-list">
+        ${game.disputeArchive
+          .map(
+            (entry) => `
+              <li>
+                <span>
+                  <strong>${escapeHtml(entry.text)}</strong><br />
+                  结论：${escapeHtml(entry.resolution)}（${escapeHtml(entry.resolvedAt)}归档，已转入容易忘的规则）
+                </span>
+              </li>
+            `
+          )
+          .join("")}
+      </ul>
+    </section>
+  `;
+}
+
+function renderReviewSection(game) {
+  const review = state.review && state.review.gameId === game.id ? state.review : null;
+  const draft = reviewDrafts[game.id] || {};
+  const players = review ? review.players : draft.players ?? game.minPlayers;
+  const windowMinutes = review ? review.windowMinutes : draft.windowMinutes ?? 120;
+  const allDone = review && review.items.every((item) => item.done);
+
+  return `
+    <section class="rule-section review-panel">
+      <h3>开局冲突复核</h3>
+      <div class="split">
+        <label>
+          实际人数
+          <input id="reviewPlayersInput" type="number" min="1" max="12" value="${players}" />
+        </label>
+        <label>
+          今晚窗口(分钟)
+          <input id="reviewWindowInput" type="number" min="15" step="15" value="${windowMinutes}" />
+        </label>
+      </div>
+      <button id="buildReviewBtn" type="button">${review ? "重新生成清单" : "生成复核清单"}</button>
+      ${reviewNotice ? `<p class="review-notice">${escapeHtml(reviewNotice)}</p>` : ""}
+      ${
+        review
+          ? `
+            <ul class="review-list">
+              ${
+                review.items.map((item, index) => renderReviewItem(item, index)).join("") ||
+                `<li class="review-item done"><span>无冲突项，可直接记录开局。</span></li>`
+              }
+            </ul>
+            <button id="recordStartBtn" class="primary" type="button" ${allDone ? "" : "disabled"}>记录开局</button>
+            <p class="review-hint">清单全部确认后才能记录开局；修改人数或窗口后需重新复核。</p>
+          `
+          : `<p class="review-hint">填写实际人数和今晚可用时长，生成待确认清单。</p>`
+      }
+    </section>
+  `;
+}
+
+function renderReviewItem(item, index) {
+  if (item.kind === "dispute") {
+    return `
+      <li class="review-item ${item.done ? "done" : ""}">
+        <span>${escapeHtml(item.text)}</span>
+        ${
+          item.done
+            ? `<span class="review-resolution">结论：${escapeHtml(item.resolution)}（已转入容易忘的规则，原争议已归档）</span>`
+            : `
+              <textarea rows="2" placeholder="填写处理结论，确认后转入容易忘的规则" data-resolution-for="${index}"></textarea>
+              <button type="button" data-resolve-dispute="${index}">填写结论并归档</button>
+            `
+        }
+      </li>
+    `;
+  }
+  return `
+    <li class="review-item ${item.done ? "done" : ""}">
+      <label class="review-check">
+        <input type="checkbox" data-confirm-item="${index}" ${item.done ? "checked" : ""} />
+        <span>${escapeHtml(item.text)}</span>
+      </label>
+    </li>
+  `;
+}
+
+function buildReviewItems(game, players, windowMinutes) {
+  const items = [];
+  if (players < game.minPlayers || players > game.maxPlayers) {
+    items.push({
+      id: "players",
+      kind: "confirm",
+      text: `实际人数${players}人不在支持范围${game.minPlayers}-${game.maxPlayers}人，确认仍要开局`,
+      done: false
+    });
+  }
+  if (game.duration > windowMinutes) {
+    items.push({
+      id: "duration",
+      kind: "confirm",
+      text: `预计时长${game.duration}分钟超过今晚窗口${windowMinutes}分钟，确认时间允许`,
+      done: false
+    });
+  }
+  game.disputes.forEach((text) => {
+    items.push({
+      id: `dispute-${items.length}`,
+      kind: "dispute",
+      text: `争议待处理：${text}`,
+      disputeText: text,
+      resolution: "",
+      done: false
+    });
+  });
+  return items;
 }
 
 function renderAll() {
@@ -256,6 +393,7 @@ async function addGame(event) {
     cover,
     forgets: ["本局开始前先补充容易忘的规则。"],
     disputes: [],
+    disputeArchive: [],
     setup: ["整理组件并按人数调整初始设置。"],
     scoring: ["确认终局计分项和即时得分项。"]
   };
@@ -308,8 +446,10 @@ els.detailView.addEventListener("submit", (event) => {
 
 els.detailView.addEventListener("click", (event) => {
   const ruleButton = event.target.closest("[data-rule-key]");
-  const playedButton = event.target.closest("#playedTodayBtn");
   const deleteButton = event.target.closest("#deleteGameBtn");
+  const buildButton = event.target.closest("#buildReviewBtn");
+  const resolveButton = event.target.closest("[data-resolve-dispute]");
+  const recordButton = event.target.closest("#recordStartBtn");
   const game = state.games.find((item) => item.id === state.selectedId);
   if (!game) return;
 
@@ -320,15 +460,77 @@ els.detailView.addEventListener("click", (event) => {
     renderAll();
   }
 
-  if (playedButton) {
+  if (buildButton) {
+    const players = Number(document.querySelector("#reviewPlayersInput").value);
+    const windowMinutes = Number(document.querySelector("#reviewWindowInput").value);
+    if (!players || !windowMinutes) return;
+    reviewDrafts[game.id] = { players, windowMinutes };
+    state.review = {
+      gameId: game.id,
+      players,
+      windowMinutes,
+      items: buildReviewItems(game, players, windowMinutes)
+    };
+    reviewNotice = "";
+    renderAll();
+  }
+
+  if (resolveButton && state.review) {
+    const index = Number(resolveButton.dataset.resolveDispute);
+    const item = state.review.items[index];
+    const textarea = document.querySelector(`[data-resolution-for="${index}"]`);
+    const resolution = textarea?.value.trim();
+    if (!item || !resolution) return;
+    game.forgets.push(`争议结论｜${item.disputeText}：${resolution}`);
+    game.disputeArchive.push({
+      text: item.disputeText,
+      resolution,
+      resolvedAt: new Date().toISOString().slice(0, 10)
+    });
+    const disputeIndex = game.disputes.indexOf(item.disputeText);
+    if (disputeIndex >= 0) game.disputes.splice(disputeIndex, 1);
+    item.resolution = resolution;
+    item.done = true;
+    renderAll();
+  }
+
+  if (recordButton && state.review) {
+    if (!state.review.items.every((item) => item.done)) return;
     game.lastPlayed = new Date().toISOString().slice(0, 10);
+    state.review = null;
+    reviewNotice = "";
     renderAll();
   }
 
   if (deleteButton) {
     state.games = state.games.filter((item) => item.id !== game.id);
+    if (state.review?.gameId === game.id) state.review = null;
     state.selectedId = state.games[0]?.id || "";
     renderAll();
+  }
+});
+
+els.detailView.addEventListener("change", (event) => {
+  const game = state.games.find((item) => item.id === state.selectedId);
+  if (!game) return;
+
+  const confirmBox = event.target.closest("[data-confirm-item]");
+  if (confirmBox && state.review) {
+    state.review.items[Number(confirmBox.dataset.confirmItem)].done = confirmBox.checked;
+    renderAll();
+    return;
+  }
+
+  if (event.target.id === "reviewPlayersInput" || event.target.id === "reviewWindowInput") {
+    const players = Number(document.querySelector("#reviewPlayersInput").value);
+    const windowMinutes = Number(document.querySelector("#reviewWindowInput").value);
+    reviewDrafts[game.id] = { players, windowMinutes };
+    const review = state.review;
+    if (review && review.gameId === game.id && (review.players !== players || review.windowMinutes !== windowMinutes)) {
+      state.review = null;
+      reviewNotice = "人数或时长已变化，请重新生成复核清单。";
+      renderAll();
+    }
   }
 });
 

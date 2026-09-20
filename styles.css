@@ -124,7 +124,7 @@ h3 {
 
 .summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(108px, 1fr));
+  grid-template-columns: repeat(4, minmax(108px, 1fr));
   gap: 10px;
 }
 
@@ -280,6 +280,76 @@ label {
 .pill.heavy {
   background: rgba(116, 100, 155, 0.13);
   color: var(--lavender);
+}
+
+.pill.warn {
+  background: rgba(179, 72, 72, 0.12);
+  color: var(--red);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.review-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.review-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  line-height: 1.45;
+}
+
+.review-item.done {
+  border-color: var(--green);
+  background: rgba(57, 116, 91, 0.06);
+}
+
+.review-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.review-check input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.review-hint,
+.review-resolution {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-resolution {
+  color: var(--green);
+}
+
+.review-notice {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.archive-section {
+  background: rgba(104, 112, 121, 0.06);
 }
 
 .detail-panel {
