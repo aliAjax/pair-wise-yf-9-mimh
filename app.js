@@ -15,6 +15,7 @@ const defaultState = {
       cover: "",
       forgets: ["商站建造前先确认道路或水路连接", "袋中随从抽完后不是重洗弃堆，而是从已回袋内容继续抽"],
       disputes: ["事件顺序和玩家动作结算先后", "科技板是否能替代所有同类随从"],
+      disputeArchive: [],
       setup: ["按人数放置货物板块", "每位玩家拿起始随从、商人和个人板"],
       scoring: ["货物分数", "商站和市民乘区块", "金币和建筑剩余加分"]
     },
@@ -29,6 +30,7 @@ const defaultState = {
       cover: "",
       forgets: ["联邦连接时卫星数量和能量消耗要一起核对", "研究升到顶必须拿对应科技板限制"],
       disputes: ["被动充能是否能拒绝", "星球改造费用受哪些能力影响"],
+      disputeArchive: [],
       setup: ["随机终局计分板和回合得分板", "按种族设置起始资源和母星"],
       scoring: ["终局计分板", "科技轨排名", "联邦和建筑分"]
     },
@@ -43,14 +45,19 @@ const defaultState = {
       cover: "",
       forgets: ["每轮结束先铺墙再补工厂展示区", "地板线扣分后清空对应砖"],
       disputes: ["同色砖放置限制是否看整面墙", "中央区起始玩家标记是否必须拿"],
+      disputeArchive: [],
       setup: ["按人数放工厂圆盘", "每个圆盘补4块砖"],
       scoring: ["横竖相邻即时分", "完整行列和颜色终局加分"]
     }
-  ]
+  ],
+  review: null
 };
 
 let state = loadState();
 if (!state.selectedId) state.selectedId = state.games[0]?.id || "";
+if (!state.review || !state.games.some((game) => game.id === state.review.gameId)) {
+  state.review = null;
+}
 
 const els = {
   searchInput: document.querySelector("#searchInput"),
@@ -70,14 +77,23 @@ const els = {
   gameCount: document.querySelector("#gameCount"),
   ruleCount: document.querySelector("#ruleCount"),
   staleGame: document.querySelector("#staleGame"),
-  visibleCount: document.querySelector("#visibleCount")
+  visibleCount: document.querySelector("#visibleCount"),
+  reviewCount: document.querySelector("#reviewCount"),
+  reviewPlayersInput: document.querySelector("#reviewPlayersInput"),
+  reviewWindowInput: document.querySelector("#reviewWindowInput"),
+  reviewPanel: document.querySelector("#reviewPanel")
 };
 
 function loadState() {
   const saved = localStorage.getItem(storageKey);
   if (!saved) return structuredClone(defaultState);
   try {
-    return { ...structuredClone(defaultState), ...JSON.parse(saved) };
+    const parsed = JSON.parse(saved);
+    const state = { ...structuredClone(defaultState), ...parsed };
+    state.games.forEach((game) => {
+      if (!Array.isArray(game.disputeArchive)) game.disputeArchive = [];
+    });
+    return state;
   } catch {
     return structuredClone(defaultState);
   }
@@ -94,6 +110,73 @@ function daysSince(dateString) {
 
 function getAllRules(game) {
   return [...game.forgets, ...game.disputes, ...game.setup, ...game.scoring];
+}
+
+function getReviewGame() {
+  return state.games.find((item) => item.id === state.review?.gameId) || null;
+}
+
+function buildReviewItems(game, players, windowMinutes) {
+  const items = [];
+  if (players < game.minPlayers || players > game.maxPlayers) {
+    items.push({
+      id: "players",
+      type: "check",
+      text: `人数 ${players} 人不在支持范围（${game.minPlayers}-${game.maxPlayers} 人）`,
+      hint: "未确认前不得记为已玩",
+      done: false
+    });
+  }
+  if (game.duration > windowMinutes) {
+    items.push({
+      id: "duration",
+      type: "check",
+      text: `预计时长 ${game.duration} 分钟超过今晚窗口 ${windowMinutes} 分钟`,
+      hint: "未确认前不得记为已玩",
+      done: false
+    });
+  }
+  game.disputes.forEach((dispute, index) => {
+    items.push({
+      id: `dispute-${index}`,
+      type: "dispute",
+      dispute,
+      text: `争议待处理：${dispute}`,
+      hint: "填写处理结论后转为容易忘的规则，原争议归档保留",
+      done: false,
+      resolution: ""
+    });
+  });
+  return items;
+}
+
+function startReview(game, players, windowMinutes) {
+  state.review = {
+    gameId: game.id,
+    players,
+    windowMinutes,
+    items: buildReviewItems(game, players, windowMinutes)
+  };
+}
+
+function isReviewReady(review) {
+  return Boolean(review) && review.items.every((item) => item.done);
+}
+
+function reviewNeedsRecheck(review, game) {
+  if (!review || !game) return false;
+  const pendingDisputes = review.items.filter((item) => item.type === "dispute" && !item.done).length;
+  return (
+    review.players !== Number(els.reviewPlayersInput.value) ||
+    review.windowMinutes !== Number(els.reviewWindowInput.value) ||
+    game.disputes.length !== pendingDisputes
+  );
+}
+
+function syncReviewInputs() {
+  const reviewGame = getReviewGame() || state.games.find((game) => game.id === state.selectedId);
+  els.reviewPlayersInput.value = state.review ? state.review.players : reviewGame?.minPlayers ?? 2;
+  els.reviewWindowInput.value = state.review ? state.review.windowMinutes : 180;
 }
 
 function getFilteredGames() {
@@ -122,6 +205,8 @@ function renderSummary() {
   els.gameCount.textContent = state.games.length;
   els.ruleCount.textContent = allRuleCount;
   els.staleGame.textContent = stale ? `${daysSince(stale.lastPlayed)}天` : "-";
+  const pending = state.review ? state.review.items.filter((item) => !item.done).length : 0;
+  els.reviewCount.textContent = state.review ? `${pending}项` : "-";
 }
 
 function renderList() {
@@ -180,6 +265,8 @@ function renderDetail() {
       ${renderRuleSection("常见争议", "disputes", game.disputes)}
       ${renderRuleSection("开局准备", "setup", game.setup)}
       ${renderRuleSection("计分提醒", "scoring", game.scoring)}
+      ${renderArchiveSection(game)}
+      ${renderReviewStatus(game)}
       <form class="add-rule" id="ruleForm">
         <select id="ruleTypeInput">
           <option value="forgets">容易忘的规则</option>
@@ -191,7 +278,7 @@ function renderDetail() {
         <button class="primary" type="submit">加入规则卡片</button>
       </form>
       <div class="detail-actions">
-        <button id="playedTodayBtn" type="button">标记今天玩过</button>
+        <button id="reviewGameBtn" class="primary" type="button">复核开局</button>
         <button id="deleteGameBtn" type="button">删除桌游</button>
       </div>
     </div>
@@ -220,11 +307,92 @@ function renderRuleSection(title, key, items) {
   `;
 }
 
+function renderArchiveSection(game) {
+  const archive = game.disputeArchive || [];
+  return `
+    <section class="rule-section archive-section">
+      <h3>争议归档</h3>
+      <ul class="rule-list">
+        ${
+          archive
+            .map(
+              (entry) => `
+                <li>
+                  <span>
+                    <strong>${escapeHtml(entry.dispute)}</strong><br />
+                    结论：${escapeHtml(entry.resolution)}<br />
+                    <small>${escapeHtml(entry.date)} 归档</small>
+                  </span>
+                </li>
+              `
+            )
+            .join("") || `<li><span>暂无归档。</span></li>`
+        }
+      </ul>
+    </section>
+  `;
+}
+
+function renderReviewStatus(game) {
+  const review = state.review && state.review.gameId === game.id ? state.review : null;
+  if (!review) {
+    return `<p class="review-hint">复核通过后才能记录开局。</p>`;
+  }
+  const pending = review.items.filter((item) => !item.done).length;
+  if (pending === 0) {
+    return `<p class="review-hint ready">复核清单已全部确认，可以记录开局。</p>`;
+  }
+  return `<p class="review-hint pending">复核进行中：还有 ${pending} 项待确认，确认前不得记为已玩。</p>`;
+}
+
+function renderReviewPanel() {
+  const game = getReviewGame();
+  if (!state.review || !game) {
+    els.reviewPanel.innerHTML = `<p class="empty">选择桌游后点击「复核开局」，生成本次待确认清单。</p>`;
+    return;
+  }
+  const recheck = reviewNeedsRecheck(state.review, game);
+  const ready = isReviewReady(state.review);
+  const itemsHtml = state.review.items
+    .map((item) => {
+      if (item.type === "check") {
+        return `
+          <li class="review-item ${item.done ? "done" : ""}">
+            <label class="review-check">
+              <input type="checkbox" data-review-check="${item.id}" ${item.done ? "checked" : ""} />
+              <span>${escapeHtml(item.text)}<small>${escapeHtml(item.hint)}</small></span>
+            </label>
+          </li>
+        `;
+      }
+      return `
+        <li class="review-item dispute ${item.done ? "done" : ""}">
+          <span>${escapeHtml(item.text)}<small>${escapeHtml(item.hint)}</small></span>
+          <textarea rows="2" data-review-resolution="${item.id}" placeholder="填写处理结论，确认后转为容易忘的规则" ${item.done ? "disabled" : ""}>${escapeHtml(item.resolution)}</textarea>
+          <button type="button" data-review-resolve="${item.id}" ${item.done ? "disabled" : ""}>确认结论并归档</button>
+        </li>
+      `;
+    })
+    .join("");
+  els.reviewPanel.innerHTML = `
+    <div class="review-head">
+      <span class="pill">${escapeHtml(game.name)}</span>
+      <span class="pill">${state.review.players}人</span>
+      <span class="pill">窗口${state.review.windowMinutes}分钟</span>
+    </div>
+    ${recheck ? `<p class="review-warning">人数或时长已变化，请重新复核生成清单。</p>` : ""}
+    ${state.review.items.length === 0 ? `<p class="empty">没有待确认项，可以直接记录开局。</p>` : ""}
+    <ul class="review-list">${itemsHtml}</ul>
+    <button id="recordPlayBtn" class="primary" type="button" ${ready && !recheck ? "" : "disabled"}>记录开局（今天已玩）</button>
+  `;
+}
+
 function renderAll() {
   saveState();
   renderSummary();
   renderList();
   renderDetail();
+  renderReviewPanel();
 }
 
 function readFileAsDataUrl(file) {
@@ -256,6 +424,7 @@ async function addGame(event) {
     cover,
     forgets: ["本局开始前先补充容易忘的规则。"],
     disputes: [],
+    disputeArchive: [],
     setup: ["整理组件并按人数调整初始设置。"],
     scoring: ["确认终局计分项和即时得分项。"]
   };
@@ -303,12 +472,80 @@ els.detailView.addEventListener("submit", (event) => {
   const text = document.querySelector("#ruleTextInput").value.trim();
   if (!text) return;
   game[key].push(text);
+  if (key === "disputes" && state.review?.gameId === game.id) {
+    startReview(game, Number(els.reviewPlayersInput.value), Number(els.reviewWindowInput.value));
+  }
   renderAll();
+});
+
+function handleReviewParamsChange() {
+  const game = getReviewGame();
+  if (!game) return;
+  startReview(game, Number(els.reviewPlayersInput.value), Number(els.reviewWindowInput.value));
+  renderAll();
+}
+
+els.reviewPlayersInput.addEventListener("change", handleReviewParamsChange);
+els.reviewWindowInput.addEventListener("change", handleReviewParamsChange);
+
+els.reviewPanel.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-review-check]");
+  if (!checkbox || !state.review) return;
+  const item = state.review.items.find((entry) => entry.id === checkbox.dataset.reviewCheck);
+  if (!item) return;
+  item.done = checkbox.checked;
+  renderAll();
+});
+
+els.reviewPanel.addEventListener("input", (event) => {
+  const textarea = event.target.closest("[data-review-resolution]");
+  if (!textarea || !state.review) return;
+  const item = state.review.items.find((entry) => entry.id === textarea.dataset.reviewResolution);
+  if (!item) return;
+  item.resolution = textarea.value.trim();
+  saveState();
+});
+
+els.reviewPanel.addEventListener("click", (event) => {
+  const resolveButton = event.target.closest("[data-review-resolve]");
+  const recordButton = event.target.closest("#recordPlayBtn");
+  if (!state.review) return;
+  const game = state.games.find((item) => item.id === state.review.gameId);
+  if (!game) return;
+
+  if (resolveButton) {
+    const item = state.review.items.find((entry) => entry.id === resolveButton.dataset.reviewResolve);
+    if (!item || item.type !== "dispute") return;
+    const resolution = (item.resolution || "").trim();
+    if (!resolution) {
+      alert("先填写处理结论，才能确认这条争议。");
+      return;
+    }
+    const disputeIndex = game.disputes.indexOf(item.dispute);
+    if (disputeIndex !== -1) {
+      game.disputes.splice(disputeIndex, 1);
+      game.disputeArchive.push({
+        dispute: item.dispute,
+        resolution,
+        date: new Date().toISOString().slice(0, 10)
+      });
+    }
+    game.forgets.push(`争议结论：${item.dispute} —— ${resolution}`);
+    item.done = true;
+    renderAll();
+  }
+
+  if (recordButton) {
+    if (!isReviewReady(state.review) || reviewNeedsRecheck(state.review, game)) return;
+    game.lastPlayed = new Date().toISOString().slice(0, 10);
+    state.review = null;
+    renderAll();
+  }
 });
 
 els.detailView.addEventListener("click", (event) => {
   const ruleButton = event.target.closest("[data-rule-key]");
-  const playedButton = event.target.closest("#playedTodayBtn");
+  const reviewButton = event.target.closest("#reviewGameBtn");
   const deleteButton = event.target.closest("#deleteGameBtn");
   const game = state.games.find((item) => item.id === state.selectedId);
   if (!game) return;
@@ -317,15 +554,19 @@ els.detailView.addEventListener("click", (event) => {
     const key = ruleButton.dataset.ruleKey;
     const index = Number(ruleButton.dataset.ruleIndex);
     game[key].splice(index, 1);
+    if (key === "disputes" && state.review?.gameId === game.id) {
+      startReview(game, Number(els.reviewPlayersInput.value), Number(els.reviewWindowInput.value));
+    }
     renderAll();
   }
 
-  if (playedButton) {
-    game.lastPlayed = new Date().toISOString().slice(0, 10);
+  if (reviewButton) {
+    startReview(game, Number(els.reviewPlayersInput.value), Number(els.reviewWindowInput.value));
     renderAll();
   }
 
   if (deleteButton) {
+    if (state.review?.gameId === game.id) state.review = null;
     state.games = state.games.filter((item) => item.id !== game.id);
     state.selectedId = state.games[0]?.id || "";
     renderAll();
@@ -333,4 +574,5 @@ els.detailView.addEventListener("click", (event) => {
 });
 
 setDefaultDate();
+syncReviewInputs();
 renderAll();
